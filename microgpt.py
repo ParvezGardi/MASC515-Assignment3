@@ -47,6 +47,7 @@ class Value:
     def __pow__(self, other): return Value(self.data**other, (self,), (other * self.data**(other-1),))
     def log(self): return Value(math.log(self.data), (self,), (1/self.data,))
     def exp(self): return Value(math.exp(self.data), (self,), (math.exp(self.data),))
+    def tanh(self): t = math.tanh(self.data) return Value(t, (self,), (1 - t * t,))
     def relu(self): return Value(max(0, self.data), (self,), (float(self.data > 0),))
     def __neg__(self): return self * -1
     def __radd__(self, other): return self + other
@@ -105,10 +106,37 @@ def rmsnorm(x):
     scale = (ms + 1e-5) ** -0.5
     return [xi * scale for xi in x]
 
+def gelu(x):
+    return 0.5 * x * (1 + (x * 0.7978845608 * (1 + 0.044715 * x * x)).tanh())
+
+def rope(x, pos):
+    out = []
+    for i in range(0, len(x), 2):
+        theta = pos / (10000 ** (i / len(x)))
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+
+        x1 = x[i]
+        x2 = x[i + 1] if i + 1 < len(x) else x[i]
+
+        out.append(x1 * cos_t - x2 * sin_t)
+        out.append(x1 * sin_t + x2 * cos_t)
+    return out
+
+def lora(x, w):
+    rank = 4
+    A = [[Value(random.gauss(0, 0.01)) for _ in range(len(x))] for _ in range(rank)]
+    B = [[Value(random.gauss(0, 0.01)) for _ in range(rank)] for _ in range(len(w))]
+    
+    lora_update = linear(x, A)
+    lora_update = linear(lora_update, B)
+    
+    base = linear(x, w)
+    return [b + u for b, u in zip(base, lora_update)]
+    
 def gpt(token_id, pos_id, keys, values):
-    tok_emb = state_dict['wte'][token_id] # token embedding
-    pos_emb = state_dict['wpe'][pos_id] # position embedding
-    x = [t + p for t, p in zip(tok_emb, pos_emb)] # joint token and position embedding
+    tok_emb = state_dict['wte'][token_id]
+    x = rope(tok_emb, pos_id) # joint token and position embedding
     x = rmsnorm(x) # note: not redundant due to backward pass via the residual connection
 
     for li in range(n_layer):
@@ -135,8 +163,8 @@ def gpt(token_id, pos_id, keys, values):
         # 2) MLP block
         x_residual = x
         x = rmsnorm(x)
-        x = linear(x, state_dict[f'layer{li}.mlp_fc1'])
-        x = [xi.relu() for xi in x]
+        x = lora(x, state_dict[f'layer{li}.mlp_fc1'])
+        x = [gelu(xi) for xi in x]
         x = linear(x, state_dict[f'layer{li}.mlp_fc2'])
         x = [a + b for a, b in zip(x, x_residual)]
 
