@@ -87,6 +87,10 @@ for i in range(n_layer):
     state_dict[f'layer{i}.attn_wo'] = matrix(n_embd, n_embd)
     state_dict[f'layer{i}.mlp_fc1'] = matrix(4 * n_embd, n_embd)
     state_dict[f'layer{i}.mlp_fc2'] = matrix(n_embd, 4 * n_embd)
+    state_dict[f'layer{i}.moe_expert1_fc1'] = matrix(4 * n_embd, n_embd)
+    state_dict[f'layer{i}.moe_expert1_fc2'] = matrix(n_embd, 4 * n_embd)
+    state_dict[f'layer{i}.moe_expert2_fc1'] = matrix(4 * n_embd, n_embd)
+    state_dict[f'layer{i}.moe_expert2_fc2'] = matrix(n_embd, 4 * n_embd)
 params = [p for mat in state_dict.values() for row in mat for p in row] # flatten params into a single list[Value]
 print(f"num params: {len(params)}")
 
@@ -133,6 +137,12 @@ def lora(x, w):
     
     base = linear(x, w)
     return [b + u for b, u in zip(base, lora_update)]
+
+def moe(x, e1_fc1, e1_fc2, e2_fc1, e2_fc2):
+    e1 = linear([gelu(xi) for xi in linear(x, e1_fc1)], e1_fc2)
+    e2 = linear([gelu(xi) for xi in linear(x, e2_fc1)], e2_fc2)
+    gate = 0.5
+    return [gate * a + (1 - gate) * b for a, b in zip(e1, e2)]
     
 def gpt(token_id, pos_id, keys, values):
     tok_emb = state_dict['wte'][token_id]
@@ -162,11 +172,15 @@ def gpt(token_id, pos_id, keys, values):
         x = [a + b for a, b in zip(x, x_residual)]
         # 2) MLP block
         x_residual = x
-        x = rmsnorm(x)
-        x = lora(x, state_dict[f'layer{li}.mlp_fc1'])
-        x = [gelu(xi) for xi in x]
-        x = linear(x, state_dict[f'layer{li}.mlp_fc2'])
-        x = [a + b for a, b in zip(x, x_residual)]
+x = rmsnorm(x)
+x = moe(
+    x,
+    state_dict[f'layer{li}.moe_expert1_fc1'],
+    state_dict[f'layer{li}.moe_expert1_fc2'],
+    state_dict[f'layer{li}.moe_expert2_fc1'],
+    state_dict[f'layer{li}.moe_expert2_fc2'],
+)
+x = [a + b for a, b in zip(x, x_residual)]
 
     logits = linear(x, state_dict['lm_head'])
     return logits
